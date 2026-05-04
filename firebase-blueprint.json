@@ -1,0 +1,52 @@
+{
+  "entities": {
+    "InventoryItem": {
+      "title": "Log Entry",
+      "description": "A single journal or log entry for medication usage or purchase",
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Optional name"
+        },
+        "quantity": {
+          "type": "number",
+          "description": "Quantity processed (positive for use, negative for purchase)"
+        },
+        "unit": {
+          "type": "string",
+          "description": "The unit of measurement (e.g. mg, pill)"
+        },
+        "price": {
+          "type": "number",
+          "description": "Cost if applicable"
+        },
+        "notes": {
+          "type": "string",
+          "description": "Journal notes"
+        },
+        "tags": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Tags for categorization"
+        },
+        "category": {
+          "type": "string",
+          "description": "The medication or item name"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Log timestamp"
+        }
+      },
+      "required": ["category", "quantity", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/items/{itemId}": {
+      "schema": "InventoryItem",
+      "description": "Collection of inventory items"
+    }
+  }
+}
