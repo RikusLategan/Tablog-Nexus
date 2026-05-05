@@ -7,9 +7,11 @@ import {
   query, 
   onSnapshot, 
   orderBy, 
+  where,
   serverTimestamp,
   writeBatch,
-  FirestoreError 
+  FirestoreError,
+  setDoc
 } from 'firebase/firestore';
 import { db, auth } from '../lib/firebase';
 import { InventoryItem } from '../types';
@@ -53,7 +55,14 @@ const ITEMS_COLLECTION = 'items';
 
 export const inventoryService = {
   subscribeToItems: (callback: (items: InventoryItem[]) => void) => {
-    const q = query(collection(db, ITEMS_COLLECTION), orderBy('createdAt', 'desc'));
+    const user = auth.currentUser;
+    if (!user) return () => {};
+
+    const q = query(
+      collection(db, ITEMS_COLLECTION), 
+      where('userId', '==', user.uid),
+      orderBy('createdAt', 'desc')
+    );
     
     return onSnapshot(q, (snapshot) => {
       const items: InventoryItem[] = snapshot.docs.map(doc => ({
@@ -66,12 +75,41 @@ export const inventoryService = {
     });
   },
 
-  addItem: async (item: Omit<InventoryItem, 'id' | 'createdAt'>) => {
+  addItem: async (item: Omit<InventoryItem, 'id' | 'createdAt' | 'userId'> & { loggedAt?: Date | any }) => {
     try {
-      await addDoc(collection(db, ITEMS_COLLECTION), {
+      const user = auth.currentUser;
+      if (!user) throw new Error("Authentication required");
+
+      const { Timestamp } = await import('firebase/firestore');
+      const payload: any = {
         ...item,
-        createdAt: serverTimestamp()
-      });
+        userId: user.uid,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp()
+      };
+      if (item.loggedAt instanceof Date) {
+        payload.loggedAt = Timestamp.fromDate(item.loggedAt);
+      }
+      const docRef = await addDoc(collection(db, ITEMS_COLLECTION), payload);
+      return docRef.id;
+    } catch (error) {
+      handleFirestoreError(error, OperationType.WRITE, ITEMS_COLLECTION);
+    }
+  },
+
+  restoreItem: async (item: InventoryItem) => {
+    try {
+      const user = auth.currentUser;
+      if (!user) throw new Error("Authentication required");
+
+      const { id, ...data } = item;
+      const payload = { ...data, userId: user.uid };
+
+      if (id) {
+        await setDoc(doc(db, ITEMS_COLLECTION, id), payload);
+      } else {
+        await addDoc(collection(db, ITEMS_COLLECTION), payload);
+      }
     } catch (error) {
       handleFirestoreError(error, OperationType.WRITE, ITEMS_COLLECTION);
     }
@@ -79,8 +117,11 @@ export const inventoryService = {
 
   updateItem: async (id: string, updates: Partial<InventoryItem>) => {
     try {
+      const user = auth.currentUser;
+      if (!user) throw new Error("Authentication required");
+
       const docRef = doc(db, ITEMS_COLLECTION, id);
-      await updateDoc(docRef, updates);
+      await updateDoc(docRef, { ...updates, updatedAt: serverTimestamp() });
     } catch (error) {
       handleFirestoreError(error, OperationType.WRITE, `${ITEMS_COLLECTION}/${id}`);
     }
@@ -88,6 +129,9 @@ export const inventoryService = {
 
   deleteItem: async (id: string) => {
     try {
+      const user = auth.currentUser;
+      if (!user) throw new Error("Authentication required");
+
       const docRef = doc(db, ITEMS_COLLECTION, id);
       await deleteDoc(docRef);
     } catch (error) {
@@ -97,7 +141,9 @@ export const inventoryService = {
 
   bulkDelete: async (ids: string[]) => {
     try {
-      const { writeBatch } = await import('firebase/firestore');
+      const user = auth.currentUser;
+      if (!user) throw new Error("Authentication required");
+
       const batch = writeBatch(db);
       ids.forEach(id => {
         const docRef = doc(db, ITEMS_COLLECTION, id);
@@ -111,11 +157,13 @@ export const inventoryService = {
 
   bulkUpdate: async (ids: string[], updates: Partial<InventoryItem>) => {
     try {
-      const { writeBatch } = await import('firebase/firestore');
+      const user = auth.currentUser;
+      if (!user) throw new Error("Authentication required");
+
       const batch = writeBatch(db);
       ids.forEach(id => {
         const docRef = doc(db, ITEMS_COLLECTION, id);
-        batch.update(docRef, updates);
+        batch.update(docRef, { ...updates, updatedAt: serverTimestamp() });
       });
       await batch.commit();
     } catch (error) {

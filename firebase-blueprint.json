@@ -34,13 +34,22 @@
           "type": "string",
           "description": "The medication or item name"
         },
+        "userId": {
+          "type": "string",
+          "description": "Owner ID"
+        },
         "createdAt": {
           "type": "string",
           "format": "date-time",
           "description": "Log timestamp"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Last update timestamp"
         }
       },
-      "required": ["category", "quantity", "createdAt"]
+      "required": ["category", "quantity", "createdAt", "userId"]
     }
   },
   "firestore": {

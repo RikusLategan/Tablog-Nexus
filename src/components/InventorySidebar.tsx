@@ -36,6 +36,8 @@ interface InventorySidebarProps {
   user: User | null;
   onLogin: () => void;
   onLogout: () => void;
+  inventory?: Record<string, number>;
+  maxInventory?: Record<string, number>;
 }
 
 export function InventorySidebar({ 
@@ -47,10 +49,12 @@ export function InventorySidebar({
   onSelectTag,
   user,
   onLogin,
-  onLogout
+  onLogout,
+  inventory,
+  maxInventory
 }: InventorySidebarProps) {
   return (
-    <Sidebar className="border-r border-border/40 bg-muted/30">
+    <Sidebar collapsible="none" className="border-r border-border/40 bg-muted/30 h-full">
       <SidebarContent>
         <SidebarGroup>
           <SidebarGroupLabel className="text-[10px] uppercase tracking-wider font-mono opacity-50">Status</SidebarGroupLabel>
@@ -83,7 +87,7 @@ export function InventorySidebar({
         </SidebarGroup>
 
         <SidebarGroup>
-          <SidebarGroupLabel className="text-[10px] uppercase tracking-wider font-mono opacity-50">Inventory Items</SidebarGroupLabel>
+          <SidebarGroupLabel className="text-[10px] uppercase tracking-wider font-mono opacity-50">Items</SidebarGroupLabel>
           <SidebarGroupContent>
             <SidebarMenu>
               {categories.map(category => (
@@ -91,10 +95,21 @@ export function InventorySidebar({
                   <SidebarMenuButton 
                     isActive={selectedCategory === category}
                     onClick={() => onSelectCategory(category)}
-                    className="font-mono text-xs"
+                    className="font-mono text-xs flex justify-between group"
                   >
-                    <Folder className="w-4 h-4 mr-2" />
-                    {category}
+                    <div className="flex items-center truncate">
+                      <Folder className="w-4 h-4 mr-2 shrink-0" />
+                      <span className="truncate">{category}</span>
+                    </div>
+                    <span 
+                      className={`ml-2 text-[10px] shrink-0 ${
+                        (inventory?.[category] || 0) < ((maxInventory?.[category] || 0) / 3)
+                          ? 'text-red-500 font-bold'
+                          : 'opacity-50'
+                      }`}
+                    >
+                      {inventory?.[category] || 0}
+                    </span>
                   </SidebarMenuButton>
                 </SidebarMenuItem>
               ))}

@@ -3,10 +3,9 @@ import { SidebarProvider, SidebarInset } from '@/components/ui/sidebar';
 import { InventorySidebar } from './components/InventorySidebar';
 import { InventoryTable } from './components/InventoryTable';
 import { LogEntryInput } from './components/LogEntryInput';
-import { BulkEditSheet } from './components/BulkEditSheet';
 import { inventoryService } from './services/inventoryService';
-import { InventoryItem } from './types';
-import { Search, Filter, Loader2, Info, LogIn, LogOut, User as UserIcon, Shield } from 'lucide-react';
+import { InventoryItem, UndoAction } from './types';
+import { Search, Filter, Loader2, Info, LogIn, LogOut, User as UserIcon, Shield, Undo, Redo, RotateCcw, RotateCw } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Input } from '@/components/ui/input';
 import { auth, googleProvider } from './lib/firebase';
@@ -22,9 +21,11 @@ export default function App() {
   const [user, setUser] = useState<User | null>(null);
   const [sortConfig, setSortConfig] = useState<{ key: keyof InventoryItem | null, direction: 'asc' | 'desc' }>({ key: 'createdAt', direction: 'desc' });
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
-  const [isBulkEditOpen, setIsBulkEditOpen] = useState(false);
   const [currentTheme, setCurrentTheme] = useState('theme-nexus');
   const [isDarkMode, setIsDarkMode] = useState(true);
+  const [undoStack, setUndoStack] = useState<UndoAction[]>([]);
+  const [redoStack, setRedoStack] = useState<UndoAction[]>([]);
+  const [showUndoToast, setShowUndoToast] = useState(false);
 
   useEffect(() => {
     // Apply theme and dark/light classes to document body
@@ -56,13 +57,49 @@ export default function App() {
   const categories = useMemo(() => {
     const cats = new Set<string>();
     items.forEach(item => { if (item.category) cats.add(item.category); });
-    return Array.from(cats).sort();
+    const sortedCats = Array.from(cats).sort();
+    
+    // Ensure "(No Item)" is first
+    const noItemIndex = sortedCats.indexOf("(No Item)");
+    if (noItemIndex !== -1) {
+      const removed = sortedCats.splice(noItemIndex, 1);
+      sortedCats.unshift(removed[0]);
+    }
+    
+    return sortedCats;
   }, [items]);
 
   const tags = useMemo(() => {
     const tgs = new Set<string>();
     items.forEach(item => { item.tags?.forEach(t => tgs.add(t)); });
     return Array.from(tgs).sort();
+  }, [items]);
+
+  const { inventoryCounts, maxInventoryCounts } = useMemo(() => {
+    const counts: Record<string, number> = {};
+    const maxCounts: Record<string, number> = {};
+    
+    // Calculate chronologically to find the true max over time
+    const sortedItems = [...items].sort((a, b) => {
+      const aTime = (a.loggedAt ? a.loggedAt : a.createdAt)?.toDate?.()?.getTime() || 0;
+      const bTime = (b.loggedAt ? b.loggedAt : b.createdAt)?.toDate?.()?.getTime() || 0;
+      return aTime - bTime;
+    });
+
+    sortedItems.forEach(item => {
+      if (item.category) {
+        const change = item.quantity || 0;
+        const current = counts[item.category] || 0;
+        // Apply change and ensure it doesn't go below zero
+        counts[item.category] = Math.max(0, current + change);
+        
+        if (counts[item.category] > (maxCounts[item.category] || 0)) {
+          maxCounts[item.category] = counts[item.category];
+        }
+      }
+    });
+
+    return { inventoryCounts: counts, maxInventoryCounts: maxCounts };
   }, [items]);
 
   const units = useMemo(() => {
@@ -105,8 +142,8 @@ export default function App() {
         
         let comparison = 0;
         if (sortConfig.key === 'createdAt') {
-          const aTime = a.createdAt?.toMillis?.() || 0;
-          const bTime = b.createdAt?.toMillis?.() || 0;
+          const aTime = (a.loggedAt || a.createdAt)?.toMillis?.() || 0;
+          const bTime = (b.loggedAt || b.createdAt)?.toMillis?.() || 0;
           comparison = aTime - bTime;
         } else {
           comparison = aValue > bValue ? 1 : -1;
@@ -119,16 +156,61 @@ export default function App() {
     return result;
   }, [items, search, selectedCategory, selectedTag, sortConfig]);
 
-  const handleAddItem = async (data: any) => {
+  const handleAddItem = async (data: any, id?: string) => {
     if (!user) {
-      alert("You must be signed in to add items.");
+      alert("You must be signed in to perform this action.");
       return;
     }
-    await inventoryService.addItem(data);
+    
+    if (id) {
+      // Update Mode
+      const previousItem = items.find(i => i.id === id);
+      if (previousItem) {
+        const action: UndoAction = { 
+          type: 'UPDATE', 
+          id, 
+          previousData: { 
+            category: previousItem.category,
+            quantity: previousItem.quantity,
+            notes: previousItem.notes,
+            tags: previousItem.tags,
+            taskStatus: previousItem.taskStatus,
+            loggedAt: previousItem.loggedAt,
+            unit: previousItem.unit
+          },
+          newData: data
+        };
+        setUndoStack(prev => [...prev, action]);
+        setRedoStack([]);
+        setShowUndoToast(true);
+      }
+      await inventoryService.updateItem(id, data);
+      setSelectedIds(new Set()); // Clear selection after save
+    } else {
+      // Add Mode
+      const newId = await inventoryService.addItem(data);
+      if (newId) {
+        const fullItem: InventoryItem = {
+          ...data,
+          id: newId,
+          userId: user.uid,
+          createdAt: { toDate: () => data.loggedAt || new Date() } as any
+        };
+        setUndoStack(prev => [...prev, { type: 'ADD', id: newId, item: fullItem }]);
+        setRedoStack([]);
+        setShowUndoToast(true);
+      }
+    }
   };
 
   const handleDeleteItem = async (id: string) => {
     try {
+      const itemToDelete = items.find(i => i.id === id);
+      if (itemToDelete) {
+        setUndoStack(prev => [...prev, { type: 'DELETE', item: { ...itemToDelete } }]);
+        setRedoStack([]);
+        setShowUndoToast(true);
+      }
       await inventoryService.deleteItem(id);
       setSelectedIds(prev => {
         const next = new Set(prev);
@@ -142,22 +224,114 @@ export default function App() {
 
   const handleBulkDelete = async () => {
     try {
-      await inventoryService.bulkDelete(Array.from(selectedIds));
+      const idsToDelete = Array.from(selectedIds) as string[];
+      const itemsToStore = items.filter(i => i.id && idsToDelete.includes(i.id));
+      
+      setUndoStack(prev => [...prev, { type: 'BULK_DELETE', items: [...itemsToStore] }]);
+      setRedoStack([]);
+      setShowUndoToast(true);
+
+      await inventoryService.bulkDelete(idsToDelete);
       setSelectedIds(new Set());
     } catch (error) {
       console.error("Bulk delete failed:", error);
     }
   };
 
-  const handleBulkUpdate = async (updates: Partial<InventoryItem>) => {
-    await inventoryService.bulkUpdate(Array.from(selectedIds), updates);
-    setSelectedIds(new Set());
+  const handleUndo = async () => {
+    if (undoStack.length === 0) return;
+
+    const action = undoStack[undoStack.length - 1];
+    try {
+      switch (action.type) {
+        case 'ADD':
+          await inventoryService.deleteItem(action.id);
+          break;
+        case 'DELETE':
+          await inventoryService.restoreItem(action.item);
+          break;
+        case 'BULK_DELETE':
+          for (const item of action.items) {
+            await inventoryService.restoreItem(item);
+          }
+          break;
+        case 'UPDATE':
+          await inventoryService.updateItem(action.id, action.previousData);
+          break;
+      }
+      setUndoStack(prev => prev.slice(0, -1));
+      setRedoStack(prev => [...prev, action]);
+      setShowUndoToast(false);
+    } catch (error) {
+      console.error("Undo failed:", error);
+    }
   };
+
+  const handleRedo = async () => {
+    if (redoStack.length === 0) return;
+
+    const action = redoStack[redoStack.length - 1];
+    try {
+      switch (action.type) {
+        case 'ADD':
+          await inventoryService.restoreItem(action.item);
+          break;
+        case 'DELETE':
+          if (action.item.id) await inventoryService.deleteItem(action.item.id);
+          break;
+        case 'BULK_DELETE': {
+          const ids = action.items.map(i => i.id).filter(Boolean) as string[];
+          await inventoryService.bulkDelete(ids);
+          break;
+        }
+        case 'UPDATE':
+          await inventoryService.updateItem(action.id, action.newData);
+          break;
+      }
+      setRedoStack(prev => prev.slice(0, -1));
+      setUndoStack(prev => [...prev, action]);
+    } catch (error) {
+      console.error("Redo failed:", error);
+    }
+  };
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Check for focused input to avoid conflicting with typing, 
+      // but usually apps allow Ctrl+Z anywhere.
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'z') {
+        if (e.shiftKey) {
+          e.preventDefault();
+          handleRedo();
+        } else {
+          e.preventDefault();
+          handleUndo();
+        }
+      } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'y') {
+        e.preventDefault();
+        handleRedo();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [undoStack, redoStack]);
+
+  const handleEditItem = (id: string) => {
+    setSelectedIds(new Set([id]));
+  };
+
+  const editingItem = useMemo(() => {
+    if (selectedIds.size === 1) {
+      const id = Array.from(selectedIds)[0] as string;
+      return items.find(item => item.id === id);
+    }
+    return null;
+  }, [selectedIds, items]);
 
   const handleSort = (key: keyof InventoryItem) => {
     setSortConfig(prev => ({
       key,
-      direction: prev.key === key && prev.direction === 'asc' ? 'desc' : 'asc'
+      direction: prev?.key === key && prev?.direction === 'asc' ? 'desc' : 'asc'
     }));
   };
 
@@ -190,6 +364,26 @@ export default function App() {
           </div>
 
           <div className="flex items-center gap-2">
+            {/* Undo/Redo Controls */}
+            <div className="flex items-center gap-0.5 mr-2">
+              <button 
+                onClick={handleUndo}
+                disabled={undoStack.length === 0}
+                className="w-7 h-7 flex items-center justify-center rounded-full hover:bg-primary/10 disabled:opacity-20 disabled:hover:bg-transparent transition-colors"
+                title="Undo (Ctrl+Z)"
+              >
+                <RotateCcw className="w-3.5 h-3.5" />
+              </button>
+              <button 
+                onClick={handleRedo}
+                disabled={redoStack.length === 0}
+                className="w-7 h-7 flex items-center justify-center rounded-full hover:bg-primary/10 disabled:opacity-20 disabled:hover:bg-transparent transition-colors"
+                title="Redo (Ctrl+Y)"
+              >
+                <RotateCw className="w-3.5 h-3.5" />
+              </button>
+            </div>
+
             {/* Theme & Mode Selector */}
             <div className="flex items-center gap-1 border border-border/40 bg-background/50 p-0.5">
                <select 
@@ -208,14 +402,14 @@ export default function App() {
                 onClick={() => setIsDarkMode(!isDarkMode)}
                 className="px-2 h-6 flex items-center justify-center hover:bg-primary/10 text-[10px] uppercase font-mono tracking-widest"
               >
-                {isDarkMode ? 'DARK' : 'LIGHT'}
+                {isDarkMode ? 'Dark' : 'Light'}
               </button>
             </div>
 
             <div className="relative">
               <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3 h-3 text-muted-foreground" />
               <Input 
-                placeholder="QUERY DATABASE..." 
+                placeholder="Query database..." 
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
                 className="h-7 w-48 text-[13px] font-mono pl-7 rounded-none border-border/40 bg-background/50 focus-visible:ring-1 focus-visible:ring-primary/30"
@@ -246,6 +440,8 @@ export default function App() {
             user={user}
             onLogin={handleLogin}
             onLogout={handleLogout}
+            inventory={inventoryCounts}
+            maxInventory={maxInventoryCounts}
           />
           
           <SidebarInset className="flex flex-col flex-1 min-w-0 bg-background border-l border-border/40">
@@ -291,19 +487,11 @@ export default function App() {
                     <div className="flex items-center gap-2">
                       <Button 
                         size="sm"
-                        variant="outline"
-                        onClick={() => setIsBulkEditOpen(true)}
-                        className="h-7 text-[10px] font-mono uppercase rounded-none border-primary/20 hover:bg-primary/10 px-3"
-                      >
-                        Bulk Edit
-                      </Button>
-                      <Button 
-                        size="sm"
                         variant="destructive"
                         onClick={handleBulkDelete}
                         className="h-7 text-[10px] font-mono uppercase rounded-none px-3"
                       >
-                        Delete All
+                        Delete {selectedIds.size > 1 ? 'All' : 'Item'}
                       </Button>
                       <Button 
                         size="sm"
@@ -311,7 +499,7 @@ export default function App() {
                         onClick={() => setSelectedIds(new Set())}
                         className="h-7 text-[10px] font-mono uppercase rounded-none opacity-50 hover:opacity-100"
                       >
-                        Cancel
+                        Clear
                       </Button>
                     </div>
                   </motion.div>
@@ -320,47 +508,56 @@ export default function App() {
                   <InventoryTable 
                     items={filteredItems} 
                     onDelete={handleDeleteItem}
+                    onEdit={handleEditItem}
                     sortConfig={sortConfig}
                     onSort={handleSort}
                     selectedIds={selectedIds}
                     onSelectionChange={setSelectedIds}
+                    inventory={inventoryCounts}
+                    maxInventory={maxInventoryCounts}
                   />
                 </div>
               </div>
             )}
           </main>
 
-          <BulkEditSheet 
-            isOpen={isBulkEditOpen}
-            onOpenChange={setIsBulkEditOpen}
-            selectedCount={selectedIds.size}
-            onSave={handleBulkUpdate}
-          />
-
           {/* Status/Command Bar */}
-          <div className="shrink-0 flex flex-col">
-            <div className="px-4 py-1 bg-muted/30 border-t border-border/40 flex items-center justify-between">
-              <div className="flex items-center gap-4 text-[10px] font-mono text-muted-foreground">
-                <span className="flex items-center gap-1">
-                  <span className={`w-1.5 h-1.5 rounded-full ${user ? 'bg-emerald-500 animate-pulse' : 'bg-destructive'}`} />
-                  {user ? 'CONNECTED' : 'DISCONNECTED'}
-                </span>
-                {user && (
-                  <>
-                    <span>ITEMS: {items.length}</span>
-                    <span>FILTERED: {filteredItems.length}</span>
-                  </>
-                )}
-              </div>
-              <div className="text-[10px] font-mono text-muted-foreground uppercase opacity-40">
-                Ver: 1.0.5-Nexus
-              </div>
-            </div>
+          <div className="shrink-0 flex flex-col relative">
+            <AnimatePresence>
+              {showUndoToast && (
+                <motion.div 
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0 }}
+                  className="absolute bottom-full left-4 mb-2 z-50 flex items-center gap-3 bg-zinc-900 border border-primary/30 py-2 px-4 shadow-xl"
+                >
+                  <span className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground">
+                    Action performed
+                  </span>
+                  <div className="w-px h-3 bg-border/40" />
+                  <button 
+                    onClick={handleUndo}
+                    className="group flex items-center gap-1.5 text-[10px] font-mono uppercase tracking-widest text-primary hover:text-primary/80 transition-colors"
+                  >
+                    <RotateCcw className="w-3 h-3 transition-transform group-hover:-rotate-45" />
+                    Undo
+                  </button>
+                  <button 
+                    onClick={() => setShowUndoToast(false)}
+                    className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground/50 hover:text-foreground px-1"
+                  >
+                    ×
+                  </button>
+                </motion.div>
+              )}
+            </AnimatePresence>
             <LogEntryInput 
               onAdd={handleAddItem} 
               knownItems={categories}
               knownUnits={units}
               lastUsedUnits={lastUsedUnits}
+              editingItem={editingItem}
+              onCancelEdit={() => setSelectedIds(new Set())}
             />
           </div>
         </div>
