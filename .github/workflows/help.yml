@@ -35,5 +35,5 @@ jobs:
           echo Add other actions to build,
           echo test, and deploy your project.
 
-      - name: Deploy Vue Apps to Github Pages
-        uses: thefrustrateddev/vue-deploy-github-pages@v1.0.0
+      - name: Vite Github Pages Deployer
+        uses: skywarth/vite-github-pages-deployer@v1.5.0
